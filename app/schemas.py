@@ -139,3 +139,143 @@ class PendingOut(BaseModel):
     """待处理视图：坏行 + 待补结果，采购/复核一眼看到哪些项目还不能确定。"""
     raw_pending: list[RawRecordOut]
     result_pending: list[ResultOut]
+
+
+# ---- 流转与检验适用范围 --------------------------------------------------
+
+class FlowLineIn(BaseModel):
+    batch_no: str = Field(min_length=1, max_length=64)
+    quantity: float = Field(gt=0)
+
+
+class FlowRegisterRequest(BaseModel):
+    kind: Literal["receive", "split", "merge"]
+    inputs: list[FlowLineIn] = Field(min_length=1)
+    outputs: list[FlowLineIn] = Field(min_length=1)
+    loss: float = Field(default=0, ge=0)
+    quantity_unit: str = Field(default="kg", min_length=1, max_length=32)
+    effective_at: dt.datetime | None = None
+    homogeneity_retained: bool = False
+    homogeneity_evidence: str | None = None
+    material: str | None = None
+    note: str | None = None
+
+
+class FlowLineOut(BaseModel):
+    id: int
+    direction: str
+    batch_no: str
+    quantity: float
+
+
+class FlowOperationOut(BaseModel):
+    id: int
+    operation_no: str
+    kind: str
+    quantity_unit: str
+    loss_quantity: float
+    effective_at: dt.datetime
+    recorded_at: dt.datetime
+    status: str
+    suspend_reasons: list[dict[str, Any]] = Field(default_factory=list)
+    homogeneity_retained: bool
+    homogeneity_evidence: str | None = None
+    material: str | None = None
+    note: str | None = None
+    balance: dict[str, Any] = Field(default_factory=dict)
+    lines: list[FlowLineOut] = Field(default_factory=list)
+
+
+class BindingCreateRequest(BaseModel):
+    result_id: int
+    covered_quantity: float = Field(gt=0)
+    sampling_basis: str = Field(min_length=2, max_length=500)
+    source_batch_no: str | None = None
+    homogeneity_evidence: str | None = None
+    note: str | None = None
+
+
+class CoverageOut(BaseModel):
+    id: int
+    binding_id: int
+    result_id: int
+    sample_no: str
+    analyte: str
+    source_batch_no: str
+    covered_batch_no: str
+    revision: int
+    is_current: bool
+    entered_quantity: float
+    entered_proven_quantity: float
+    covered_quantity: float
+    pending_quantity: float
+    status: str
+    via_merge: bool
+    paths: list[Any]
+    reason: str | None = None
+    computed_at: dt.datetime
+
+
+class BindingOut(BaseModel):
+    id: int
+    binding_no: str
+    result_id: int
+    sample_no: str
+    analyte: str
+    source_batch_no: str
+    covered_quantity: float
+    sampling_basis: str
+    homogeneity_evidence: str | None = None
+    status: str
+    note: str | None = None
+    registered_by: str
+    created_at: dt.datetime
+    coverage: list[CoverageOut] = Field(default_factory=list)
+
+
+class RestrictionOut(BaseModel):
+    id: int
+    batch_no: str
+    revision: int
+    is_current: bool
+    total_quantity: float
+    transferred_quantity: float
+    remaining_quantity: float
+    released_quantity: float
+    held_quantity: float
+    status: str
+    bases: list[Any]
+    computed_at: dt.datetime
+
+
+class AnomalyConfirmRequest(BaseModel):
+    batch_no: str
+    reason: str = Field(min_length=2, max_length=500)
+
+
+class AnomalyOut(BaseModel):
+    id: int
+    batch_no: str
+    reason: str
+    status: str
+    confirmed_by: str
+    confirmed_at: dt.datetime
+    impact: dict[str, Any]
+
+
+class ReportRevisionRequest(BaseModel):
+    reason: str = Field(min_length=2, max_length=200)
+    note: str = Field(min_length=2, max_length=1000)
+    affected_batch_no: str | None = None
+
+
+class ReportRevisionOut(BaseModel):
+    id: int
+    report_id: int
+    revision_no: int
+    reason: str
+    note: str
+    affected_batch_no: str | None
+    snapshot: dict[str, Any]
+    created_by: str
+    created_at: dt.datetime

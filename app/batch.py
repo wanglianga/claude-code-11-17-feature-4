@@ -6,6 +6,11 @@
 3. 冲突已处理：不存在 open 冲突；
 4. 待补清零：生效结果无 pending_* 状态。
 任一不满足 -> hold，并在 detail 中列明缺口。判定走区间规则，横跨边界即 needs_review。
+
+流转层叠加（仅在已登记流转的批次上生效）：
+5. 适用范围收紧：该批次尚存数量中没有检验覆盖证据、或继承覆盖缺同质性依据的部分
+   暂不放行。存在暂扣数量 -> 结论不得为 pass（降为 needs_review 并列明暂扣清单），
+   批次被确认异常 -> hold。登记过收货但尚无任何覆盖时同样不能直接 pass。
 """
 from __future__ import annotations
 
@@ -23,8 +28,13 @@ from app.models import (
     BATCH_PASS,
     BATCH_REVIEW,
     CONFLICT_OPEN,
+    RESTRICT_BLOCKED,
+    RESTRICT_CLEAR,
+    RESTRICT_PARTIAL,
+    RESTRICT_RESTRICTED,
     SAMPLE_VALID,
     BatchConclusion,
+    BatchRestriction,
     Conflict,
     DecisionRule,
     ResultGroup,
@@ -165,8 +175,42 @@ def evaluate_batch(db: Session, batch_no: str) -> BatchConclusion:
                 }
             )
 
+    # 流转层：可放行数量不足时收窄结论（未登记流转的批次不受影响）
+    restriction = (
+        db.query(BatchRestriction)
+        .filter_by(batch_no=batch_no, is_current=True)
+        .order_by(BatchRestriction.revision.desc())
+        .first()
+    )
+    coverage_gaps: list[str] = []
+    if restriction is not None:
+        held = float(restriction.held_quantity)
+        if restriction.status == RESTRICT_BLOCKED:
+            blockers.append(
+                f"批次 {batch_no} 已被确认异常，尚存 {held:g} 不得放行；"
+                + "；".join(b.get("message", "") for b in restriction.bases if b.get("kind") == "batch_anomaly")
+            )
+        elif restriction.status in (RESTRICT_RESTRICTED, RESTRICT_PARTIAL, RESTRICT_CLEAR) and held > 0:
+            coverage_gaps.append(
+                f"尚存 {float(restriction.remaining_quantity):g} 中仅 "
+                f"{float(restriction.released_quantity):g} 有检验覆盖证据，"
+                f"其余 {held:g} 暂不放行（restriction_revision={restriction.revision}）"
+            )
+            for base in restriction.bases:
+                if base.get("kind") in (
+                    "pending_reinspection", "mixed_only", "uncovered_remaining", "upstream_anomaly"
+                ):
+                    coverage_gaps.append(
+                        f"[{base.get('kind')}] {base.get('sample_no') or base.get('upstream_batch_no') or batch_no}/"
+                        f"{base.get('analyte') or '-'}：{base.get('message', '')}"
+                    )
+
     prerequisites_met = not blockers
     conclusion = BATCH_HOLD if blockers else worst
+    if not blockers and coverage_gaps:
+        # 部分可放行不等于整批可放行：不判 pass，交负责人按暂扣清单处置
+        if conclusion == BATCH_PASS:
+            conclusion = BATCH_REVIEW
 
     # 总量挂起不阻断浓度判定，但必须在结论中显式提示“总量仍待补”
     valid_sample_nos = [s.sample_no for s in valid_samples]
@@ -199,6 +243,17 @@ def evaluate_batch(db: Session, batch_no: str) -> BatchConclusion:
             "blockers": blockers,
             "total_pending_warnings": total_warnings,
             "items": item_details,
+            "coverage_gaps": coverage_gaps,
+            "trace_restriction": None if restriction is None else {
+                "revision": restriction.revision,
+                "status": restriction.status,
+                "total_quantity": float(restriction.total_quantity),
+                "transferred_quantity": float(restriction.transferred_quantity),
+                "remaining_quantity": float(restriction.remaining_quantity),
+                "released_quantity": float(restriction.released_quantity),
+                "held_quantity": float(restriction.held_quantity),
+                "bases": restriction.bases,
+            },
             "valid_samples": [s.sample_no for s in valid_samples],
             "invalid_samples": [
                 {"sample_no": s.sample_no, "reason": s.invalid_reason} for s in invalid_samples
